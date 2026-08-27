@@ -95,6 +95,35 @@ def test_simple_key_and_string_fast_paths_match_tomli():
     assert_same(mojo_tomli.loads(document), tomli.loads(document))
 
 
+def test_flat_scalar_document_fast_path_matches(monkeypatch):
+    document = (
+        'name = "demo"\n'
+        "enabled = true\n"
+        "retries = -3\n"
+        "ratio = 0.25\n"
+        "limit = +inf\n"
+    )
+    expected = tomli.loads(document)
+
+    class UnexpectedParser:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("flat scalar document used the semantic parser")
+
+    monkeypatch.setattr(_parser, "Parser", UnexpectedParser)
+    assert_same(mojo_tomli.loads(document), expected)
+
+
+def test_consecutive_simple_string_lines_match_tomli():
+    document = (
+        "[service]\n"
+        'first = "one"\n'
+        'second = "two"\n'
+        'third = "three"\n'
+        "enabled = true\n"
+    )
+    assert_same(mojo_tomli.loads(document), tomli.loads(document))
+
+
 def test_array_source_buffer_is_lazy_and_reused(monkeypatch):
     calls = 0
     frombuffer = _parser.np.frombuffer

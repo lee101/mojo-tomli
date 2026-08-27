@@ -25,7 +25,7 @@ def lib() -> ctypes.CDLL:
             )
         _lib = ctypes.CDLL(str(LIB_PATH))
         fn = _lib.mt_parse_primitive_array
-        fn.argtypes = [I64] * 9
+        fn.argtypes = [I64] * 8
         fn.restype = I64
     return _lib
 
@@ -44,36 +44,28 @@ def parse_primitive_array(
     if source_bytes.size > I64_MAX or not 0 <= start < source_bytes.size:
         raise ValueError("source length or start position is outside the FFI range")
 
-    # Find the closing bracket and size the output while ignoring comment text.
-    # A plain str.find/count would under-allocate for valid input containing
-    # commas or ']' inside a comment.
-    close = source.find("]", start + 1)
-    if close < 0:
-        return None
-    first_comment = source.find("#", start + 1, close)
-    if first_comment < 0:
-        capacity = source.count(",", start + 1, close) + 1
-    else:
-        pos = first_comment
-        commas = source.count(",", start + 1, first_comment)
-        while pos < len(source):
-            if source[pos] == "#":
-                newline = source.find("\n", pos + 1)
-                if newline < 0:
-                    return None
-                pos = newline + 1
-                continue
-            if source[pos] == "]":
-                break
-            if source[pos] == ",":
-                commas += 1
-            pos += 1
-        if pos >= len(source):
+    # Size the output without counting punctuation inside comments. Searching
+    # whole spans in C avoids a second Python-level walk over large arrays.
+    pos = start + 1
+    commas = 0
+    close = source.find("]", pos)
+    while True:
+        if close < 0:
             return None
-        capacity = commas + 1
+        comment = source.find("#", pos, close)
+        if comment < 0 or close < comment:
+            commas += source.count(",", pos, close)
+            break
+        commas += source.count(",", pos, comment)
+        newline = source.find("\n", comment + 1)
+        if newline < 0:
+            return None
+        pos = newline + 1
+        if close < pos:
+            close = source.find("]", pos)
+    capacity = commas + 1
     kinds = np.empty(capacity, dtype=np.uint8)
-    integers = np.zeros(capacity + 1, dtype=np.int64)
-    floats = np.empty(capacity, dtype=np.float64)
+    integers = np.empty(capacity + 1, dtype=np.int64)
     starts = np.empty(capacity, dtype=np.int64)
     ends = np.empty(capacity, dtype=np.int64)
     end = lib().mt_parse_primitive_array(
@@ -82,7 +74,6 @@ def parse_primitive_array(
         start,
         kinds.ctypes.data,
         integers.ctypes.data,
-        floats.ctypes.data,
         starts.ctypes.data,
         ends.ctypes.data,
         capacity,

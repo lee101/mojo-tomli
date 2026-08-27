@@ -38,7 +38,7 @@ The public parsing API and TOML values supported by tomli are covered:
 
 The accepted syntax and returned Python values match tomli 2.4.1, including its TOML
 1.1 additions such as `\x`, `\e`, multiline inline tables, and trailing inline-table
-commas. The committed suite has 69 tests; a differential audit on this machine against tomli's bundled
+commas. The committed suite has 71 tests; a differential audit on this machine against tomli's bundled
 TOML corpus additionally matched all 228 valid and 516 invalid documents.
 
 This project only parses TOML. It does not write TOML, preserve formatting/comments,
@@ -69,18 +69,23 @@ using Python 3.13.14.
 
 | case | mojo-tomli | tomli 2.4.1 | ratio | result |
 | --- | ---: | ---: | ---: | --- |
-| tiny config (4 scalars) | 0.025 ms | 0.028 ms | 1.10x | faster |
-| table (5,000 string keys) | 19.132 ms | 37.192 ms | 1.94x | faster |
-| integer array (250,000) | 41.144 ms | 658.184 ms | 16.00x | faster |
-| float array (150,000) | 158.829 ms | 785.837 ms | 4.95x | faster |
-| commented integer array (75,000) | 168.989 ms | 266.855 ms | 1.58x | faster |
+| tiny config (4 scalars) | 0.005 ms | 0.017 ms | 3.18x | faster |
+| table (5,000 string keys) | 4.324 ms | 22.571 ms | 5.22x | faster |
+| integer array (250,000) | 27.869 ms | 726.941 ms | 26.08x | faster |
+| float array (150,000) | 85.137 ms | 492.297 ms | 5.78x | faster |
+| commented integer array (75,000) | 31.409 ms | 280.058 ms | 8.92x | faster |
 
-Simple keys and escape-free strings use guarded parser fast paths, and the NumPy source
-view is created lazily only when an eligible array is encountered. Numbers are
-best-of-five timings after warm-up; the tiny case is best-of-twenty.
+Flat scalar documents and runs of simple keys with escape-free strings use guarded
+parser fast paths. The NumPy source view and ASCII eligibility scan are created lazily
+only when an array is encountered. Commented-array sizing searches whole source spans
+instead of walking Python characters. Numbers are best-of-five timings after warm-up;
+the tiny case is best-of-twenty.
 
-No SIMD, parallel, or GPU path is present. The benchmark above measures the code as
-shipped; results will vary by machine and input.
+No SIMD, parallel, or GPU path was added. Profiling placed the numerical Mojo kernels
+above the 5x exclusion threshold; the remaining grammar and delimiter scans are
+branch-heavy, serial, and far below the roughly two-FLOP-per-byte level that could
+justify GPU transfer and launch costs. The benchmark above measures the code as shipped;
+results will vary by machine and input.
 
 ## How it works
 
@@ -97,8 +102,8 @@ The FFI is a flat C ABI. The NumPy source view remains zero-copy at the FFI boun
 Buffers cross as integer addresses and are reconstructed as
 `UnsafePointer[..., AnyOrigin[mut=True]]` inside Mojo. The caller owns every allocation:
 one contiguous `uint8` source buffer and structure-of-arrays result buffers for `uint8`
-type tags, `int64` values and source spans, and `float64` scratch values. Float source
-spans are converted by Python's `float` to retain exactly the same rounding as tomli.
+type tags plus `int64` values and source spans. Float source spans are converted by
+Python's `float` to retain exactly the same rounding as tomli.
 Unsupported arrays return to the Python parser without changing observable behavior.
 
 MIT licensed.

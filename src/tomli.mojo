@@ -2,7 +2,6 @@
 
 comptime BytePtr = UnsafePointer[UInt8, AnyOrigin[mut=True]]
 comptime I64Ptr = UnsafePointer[Int64, AnyOrigin[mut=True]]
-comptime F64Ptr = UnsafePointer[Float64, AnyOrigin[mut=True]]
 
 
 def byte(src: BytePtr, i: Int) -> Int:
@@ -242,15 +241,14 @@ def mt_parse_primitive_array(
     start: Int,
     kinds_addr: Int,
     ints_addr: Int,
-    floats_addr: Int,
     starts_addr: Int,
     ends_addr: Int,
     capacity: Int,
 ) abi("C") -> Int:
     # Validate every scalar before constructing or dereferencing a non-nullable
-    # pointer. Python owns and keeps all six contiguous buffers alive for the
+    # pointer. Python owns and keeps all five contiguous buffers alive for the
     # duration of this call.
-    if src_addr == 0 or kinds_addr == 0 or ints_addr == 0 or floats_addr == 0 \
+    if src_addr == 0 or kinds_addr == 0 or ints_addr == 0 \
         or starts_addr == 0 or ends_addr == 0:
         return -3
     if n <= 0 or start < 0 or start >= n or capacity <= 0:
@@ -258,7 +256,6 @@ def mt_parse_primitive_array(
     var src = BytePtr(unsafe_from_address=src_addr)
     var kinds = BytePtr(unsafe_from_address=kinds_addr)
     var ints = I64Ptr(unsafe_from_address=ints_addr)
-    var floats = F64Ptr(unsafe_from_address=floats_addr)
     var starts = I64Ptr(unsafe_from_address=starts_addr)
     var ends = I64Ptr(unsafe_from_address=ends_addr)
     if byte(src, start) != 91:
@@ -266,6 +263,7 @@ def mt_parse_primitive_array(
     var pos = skip_array_ws(src, n, start + 1)
     var count = 0
     if pos < n and byte(src, pos) == 93:
+        ints.store(capacity, Int64(0))
         return pos + 1
     while pos < n:
         if count >= capacity:
@@ -294,7 +292,6 @@ def mt_parse_primitive_array(
                 return -1
             kinds.store(count, UInt8(parsed[0]))
             ints.store(count, parsed[1])
-            floats.store(count, parsed[2])
         count += 1
         pos = skip_array_ws(src, n, pos)
         if pos >= n:

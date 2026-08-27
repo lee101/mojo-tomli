@@ -44,12 +44,26 @@ RE_DATETIME = re.compile(
 )
 RE_LOCALTIME = re.compile(TIME_RE)
 RE_BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
+RE_SIMPLE_KEY_STRING = re.compile(
+    r'([A-Za-z0-9_-]+)[ \t]*=[ \t]*"([^\x00-\x08\x0a-\x1f"\\\x7f]*)"(?!")'
+)
+RE_SIMPLE_KEY_STRING_LINE = re.compile(
+    RE_SIMPLE_KEY_STRING.pattern + r"[ \t]*(?:\n|\Z)"
+)
 RE_NUMBER = re.compile(
     r"(?:0(?:x[0-9A-Fa-f](?:_?[0-9A-Fa-f])*|"
     r"b[01](?:_?[01])*|o[0-7](?:_?[0-7])*)|"
     r"[+-]?(?:0|[1-9](?:_?[0-9])*)"
     r"(?P<floatpart>(?:\.[0-9](?:_?[0-9])*)?"
     r"(?:[eE][+-]?[0-9](?:_?[0-9])*)?))"
+)
+RE_SIMPLE_SCALAR_LINE = re.compile(
+    r"[ \t]*([A-Za-z0-9_-]+)[ \t]*=[ \t]*(?:"
+    r'(?P<string>"[^\x00-\x08\x0a-\x1f"\\\x7f]*"(?!"))|'
+    r"(?P<boolean>true|false)|"
+    r"(?P<number>" + RE_NUMBER.pattern + r")|"
+    r"(?P<special>[+-]?(?:inf|nan)))"
+    r"[ \t]*(?:\n|\Z)"
 )
 
 
@@ -187,7 +201,7 @@ class Parser:
         self.flags = Flags()
         self.header: Key = ()
         self.table = self.data.dict
-        self.ascii_fast_path = source.isascii() and "\r" not in source
+        self.ascii_fast_path: bool | None = None
         self.source_bytes: np.ndarray[Any, np.dtype[np.uint8]] | None = None
 
     def error(self, message: str, pos: int | None = None) -> TOMLDecodeError:
@@ -233,7 +247,30 @@ class Parser:
                 self.flags.finalize_pending()
                 self.parse_table()
                 self.skip_ws()
-            elif char in BARE_KEY or char in "\"'":
+            elif char in BARE_KEY:
+                match = RE_SIMPLE_KEY_STRING_LINE.match(self.source, self.pos)
+                if match is not None:
+                    while match is not None:
+                        stem = match.group(1)
+                        if stem in self.table:
+                            raise self.error("Cannot overwrite a value")
+                        self.table[stem] = match.group(2)
+                        self.pos = match.end()
+                        match = RE_SIMPLE_KEY_STRING_LINE.match(
+                            self.source, self.pos
+                        )
+                    continue
+                match = RE_SIMPLE_KEY_STRING.match(self.source, self.pos)
+                if match is not None:
+                    stem = match.group(1)
+                    if stem in self.table:
+                        raise self.error("Cannot overwrite a value")
+                    self.table[stem] = match.group(2)
+                    self.pos = match.end()
+                else:
+                    self.parse_key_value(self.data, self.flags, self.header)
+                self.skip_ws()
+            elif char in "\"'":
                 self.parse_key_value(self.data, self.flags, self.header)
                 self.skip_ws()
             else:
@@ -412,6 +449,8 @@ class Parser:
         raise self.error("Invalid value")
 
     def parse_array(self, level: int) -> list[Any]:
+        if self.ascii_fast_path is None:
+            self.ascii_fast_path = self.source.isascii() and "\r" not in self.source
         if self.ascii_fast_path and self.default_float:
             if self.source_bytes is None:
                 self.source_bytes = np.frombuffer(
@@ -623,11 +662,43 @@ def make_safe_parse_float(parse_float: ParseFloat) -> ParseFloat:
     return safe
 
 
+def parse_simple_document(source: str) -> dict[str, Any] | None:
+    parsed: dict[str, Any] = {}
+    pos = 0
+    while pos < len(source):
+        match = RE_SIMPLE_SCALAR_LINE.match(source, pos)
+        if match is None:
+            return None
+        key = match.group(1)
+        if key in parsed:
+            return None
+        token = match.group("string")
+        if token is not None:
+            value: Any = token[1:-1]
+        else:
+            token = match.group("boolean")
+            if token is not None:
+                value = token == "true"
+            else:
+                token = match.group("number")
+                if token is not None:
+                    value = float(token) if match.group("floatpart") else int(token, 0)
+                else:
+                    value = float(match.group("special"))
+        parsed[key] = value
+        pos = match.end()
+    return parsed
+
+
 def loads(__s: str, *, parse_float: ParseFloat = float) -> dict[str, Any]:
     try:
         source = __s.replace("\r\n", "\n")
     except (AttributeError, TypeError):
         raise TypeError(f"Expected str object, not '{type(__s).__qualname__}'") from None
+    if parse_float is float:
+        parsed = parse_simple_document(source)
+        if parsed is not None:
+            return parsed
     return Parser(source, make_safe_parse_float(parse_float)).parse()
 
 
